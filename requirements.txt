@@ -1,0 +1,10 @@
+# IronLedger Analytics — runtime + test dependencies
+# Install with:  python -m pip install -r requirements.txt
+
+streamlit>=1.50,<2.0     # web UI, multipage navigation, caching
+pandas>=2.2,<3.0         # tabular data processing
+numpy>=1.26              # vectorized synthetic data generation
+plotly>=5.22             # interactive charts
+pyarrow>=15.0            # Parquet storage engine for pandas
+
+pytest>=8.0              # automated tests

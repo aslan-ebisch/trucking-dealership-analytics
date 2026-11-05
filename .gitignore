@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- IronLedger -------------------------------------------------------------
+# Generated datasets are reproducible from the seed: run `python generate_data.py`.
+data/*
+!data/.gitkeep
+# Local tooling / OS noise
+.DS_Store
+.streamlit/secrets.toml
