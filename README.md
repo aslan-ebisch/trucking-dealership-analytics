@@ -68,7 +68,7 @@ IronLedger answers these from one consistent set of transaction-level records.
 
 | Layer | Technology |
 |---|---|
-| Language | Python 3.10+ (developed on 3.13) |
+| Language | Python 3.11+ (Azure App Service runs 3.11; developed on 3.13) |
 | UI | Streamlit ≥ 1.50 (native multipage navigation, `st.metric` sparklines, custom dark theme) |
 | Charts | Plotly (custom "ironledger" template; colorblind-checked palette) |
 | Data processing | pandas, NumPy (fully vectorized generator) |
@@ -83,7 +83,8 @@ No database server is required.
 trucking-dealership-analytics/
 ├── app.py                      # Entry point: theme, sidebar filters, navigation
 ├── generate_data.py            # CLI: generate → validate → write datasets
-├── requirements.txt
+├── requirements.txt            # Runtime deps (pinned; installed by Azure)
+├── requirements-dev.txt        # + pytest
 ├── pytest.ini
 ├── .streamlit/config.toml      # Dark theme, fonts, chart palette
 ├── assets/                     # Original IronLedger logo (SVG)
@@ -106,7 +107,7 @@ trucking-dealership-analytics/
 │   ├── test_analytics.py       # Metric math with hand-computed answers
 │   ├── test_data_quality.py    # Integrity, determinism, corruption detection
 │   └── test_app.py             # Every page renders; filters change results
-└── data/                       # Generated datasets (git-ignored, reproducible)
+└── data/                       # Generated datasets (Parquet + metadata committed for deployment; CSVs git-ignored)
 ```
 
 The layers depend in one direction: `views → ui → analytics → data_loader`. The analytics layer never imports
@@ -114,14 +115,14 @@ Streamlit, so every number can be unit-tested and reused outside the dashboard.
 
 ## 6. Installation
 
-Requires Python 3.10+ (`python3 --version`).
+Requires Python 3.11+ (`python3 --version`).
 
 ```bash
 cd trucking-dealership-analytics
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt   # runtime deps + pytest
 ```
 
 > **⚠ Folder names containing a colon (`:`).** Python refuses to create a virtual environment inside a path containing
@@ -133,7 +134,7 @@ python -m pip install -r requirements.txt
 >    ```bash
 >    python3 -m venv ~/.venvs/ironledger
 >    source ~/.venvs/ironledger/bin/activate
->    python -m pip install -r requirements.txt
+>    python -m pip install -r requirements-dev.txt
 >    ```
 >    In VS Code: *Python: Select Interpreter* → *Enter interpreter path* → `~/.venvs/ironledger/bin/python`.
 >
@@ -213,6 +214,10 @@ command to run.
 | `operating_expenses` | store × month | `payroll_expense`, `facility_expense`, `marketing_expense`, `utilities_expense`, `floorplan_interest_expense`, `other_operating_expense`, `total_operating_expense`, `avg_floorplan_balance`, `floorplan_rate` |
 | `metadata.json` | — | seed, parameters, row counts, generation timestamp |
 
+The six Parquet files and `metadata.json` are **committed to the repository** so that a deployment contains
+everything the dashboard reads; the app never generates or writes data at runtime. If you regenerate the data
+(`--force`), commit the new Parquet files. CSV mirrors are optional and stay git-ignored.
+
 Some blank values are **expected**: trailers have no `mileage` (no odometer), sold units have no `list_price`, and
 deals without a protection product have no `protection_product`. The Data Explorer profile explains each one.
 
@@ -265,7 +270,30 @@ python -m pytest -q
 - **UI.** Every page renders headlessly without exceptions, every page handles an empty filter result, filters
   change the KPIs, and a missing dataset shows the setup screen.
 
-## 12. Future Azure deployment plan
+## 12. Azure App Service deployment
+
+The infrastructure in `infra/terraform/` provisions a Linux App Service (Python 3.11) that builds the app with Oryx
+(`SCM_DO_BUILD_DURING_DEPLOYMENT=true`, which installs `requirements.txt`) and starts it with:
+
+```bash
+python -m streamlit run app.py --server.address 0.0.0.0 --server.port 8000 --server.headless true
+```
+
+Deployment checklist:
+
+- **Data must be committed.** The app reads `data/*.parquet` relative to the code (override with
+  `IRONLEDGER_DATA_DIR`). If the files are missing, the site shows the "Setup required" screen.
+- **Package only tracked files.** `infra/terraform/.terraform/` holds ~260 MB of provider binaries. Build the zip from
+  git instead of zipping the folder:
+  ```bash
+  git archive --format=zip -o ironledger.zip HEAD
+  az webapp deploy --resource-group <rg> --name <app> --src-path ironledger.zip --type zip
+  ```
+- **Memory.** Measured on Python 3.11: ~130 MB after imports, ~220 MB after loading the 30k-sale dataset (one shared
+  cached copy), ~400 MB peak after rendering every page. That fits the 1 GB F1 tier for light, demo-level traffic.
+- **Read-only at runtime.** No page writes to local disk; CSV exports are generated in memory on click.
+
+## 13. Future Azure roadmap
 
 The code is organized so cloud deployment changes configuration, not application logic:
 

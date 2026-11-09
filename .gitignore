@@ -220,9 +220,26 @@ __marimo__/
 .streamlit/secrets.toml
 
 # ---- IronLedger -------------------------------------------------------------
-# Generated datasets are reproducible from the seed: run `python generate_data.py`.
+# Datasets are reproducible from the seed (`python generate_data.py`), but the Parquet
+# files the app reads ARE committed: Azure App Service deploys from the repository and
+# the app never generates or writes data at runtime. CSV mirrors (~13 MB, used only as a
+# fallback / for spreadsheet users) stay local.
 data/*
 !data/.gitkeep
+!data/*.parquet
+!data/metadata.json
 # Local tooling / OS noise
 .DS_Store
 .streamlit/secrets.toml
+
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Terraform workspace state
+**/terraform.tfstate.d/

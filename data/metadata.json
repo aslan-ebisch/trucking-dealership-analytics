@@ -1,0 +1,21 @@
+{
+  "generator_version": "1.0.0",
+  "generated_at_utc": "2026-11-05T03:12:34+00:00",
+  "parameters": {
+    "n_sales": 30000,
+    "n_customers": 5000,
+    "n_salespeople": 100,
+    "seed": 20260131,
+    "start": "2021-01-01",
+    "as_of": "2026-10-31"
+  },
+  "row_counts": {
+    "dealerships": 10,
+    "salespeople": 100,
+    "customers": 5000,
+    "inventory": 31191,
+    "sales": 30000,
+    "operating_expenses": 659
+  },
+  "notes": "All records are synthetic. Not affiliated with any manufacturer or dealership."
+}

@@ -1,10 +1,11 @@
-# IronLedger Analytics — runtime + test dependencies
+# IronLedger Analytics — runtime dependencies (installed by Azure App Service / Oryx).
+# Pinned to the versions tested on Python 3.11 (Azure target) and 3.13 so a deployment
+# never silently picks up a newer, untested release.
 # Install with:  python -m pip install -r requirements.txt
+# Tests/dev:     python -m pip install -r requirements-dev.txt
 
-streamlit>=1.50,<2.0     # web UI, multipage navigation, caching
-pandas>=2.2,<3.0         # tabular data processing
-numpy>=1.26              # vectorized synthetic data generation
-plotly>=5.22             # interactive charts
-pyarrow>=15.0            # Parquet storage engine for pandas
-
-pytest>=8.0              # automated tests
+streamlit==1.67.0        # web UI, multipage navigation, caching, deferred downloads
+pandas==2.3.3            # tabular data processing
+numpy==2.4.6             # vectorized synthetic data generation (2.5+ requires Python 3.12)
+plotly==7.1.0            # interactive charts
+pyarrow==26.0.1          # Parquet storage engine for pandas

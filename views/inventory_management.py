@@ -122,7 +122,8 @@ st.dataframe(
 )
 c1, c2 = st.columns([4, 1], vertical_alignment="center")
 c1.caption(f"{len(view):,} of {len(stock):,} units shown")
-c2.download_button("Export CSV", view[cols].to_csv(index=False).encode(), "ironledger_inventory.csv",
+# Deferred: the CSV is built only when clicked, not on every rerun.
+c2.download_button("Export CSV", lambda v=view[cols]: v.to_csv(index=False).encode(), "ironledger_inventory.csv",
                    "text/csv", icon=":material/download:", width="stretch")
 
 aged = stock[stock["days_in_inventory"] > 120].sort_values("days_in_inventory", ascending=False)

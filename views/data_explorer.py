@@ -111,8 +111,9 @@ with tab_browse:
     c1, c2 = st.columns([4, 1], vertical_alignment="center")
     c1.caption(f"{len(view):,} matching rows" + (f" · showing first {LIMIT:,} (export includes all)"
                                                   if len(view) > LIMIT else ""))
-    c2.download_button("Export CSV", view.to_csv(index=False).encode(), f"ironledger_{name}.csv", "text/csv",
-                       icon=":material/download:", width="stretch", key=f"dx_dl_{name}")
+    # Deferred: the CSV is built only when clicked, not on every rerun (saves CPU/memory per session).
+    c2.download_button("Export CSV", lambda v=view: v.to_csv(index=False).encode(), f"ironledger_{name}.csv",
+                       "text/csv", icon=":material/download:", width="stretch", key=f"dx_dl_{name}")
 
 # =====================================================================================================
 with tab_profile:
