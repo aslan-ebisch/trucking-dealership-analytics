@@ -22,3 +22,9 @@ variable "subscription_id" {
   type        = string
   default     = "943690a2-1f14-4e90-904c-51ed81e219b8"
 }
+
+variable "app_location" {
+  description = "Azure region for IronLedger App Service"
+  type        = string
+  default     = "westus2"
+}

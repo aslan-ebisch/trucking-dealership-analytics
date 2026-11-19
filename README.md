@@ -86,6 +86,8 @@ trucking-dealership-analytics/
 ├── requirements.txt            # Runtime deps (pinned; installed by Azure)
 ├── requirements-dev.txt        # + pytest
 ├── pytest.ini
+├── Dockerfile                  # Production image for Azure Container Apps (Python 3.11, port 8000)
+├── .dockerignore               # Keeps secrets, Terraform, tests and CSVs out of the build context
 ├── .streamlit/config.toml      # Dark theme, fonts, chart palette
 ├── assets/                     # Original IronLedger logo (SVG)
 ├── ironledger/                 # Application package
@@ -293,7 +295,70 @@ Deployment checklist:
   cached copy), ~400 MB peak after rendering every page. That fits the 1 GB F1 tier for light, demo-level traffic.
 - **Read-only at runtime.** No page writes to local disk; CSV exports are generated in memory on click.
 
-## 13. Future Azure roadmap
+## 13. Container image (Azure Container Apps)
+
+The `Dockerfile` builds a self-contained image for **Azure Container Apps (Consumption plan)**. It is independent of
+the App Service setup in section 12; the Terraform in `infra/terraform/` does not use it.
+
+**What the image contains**
+
+| | |
+|---|---|
+| Base | `python:3.11-slim-bookworm` (all pinned packages install from prebuilt wheels; no compiler needed) |
+| Dependencies | `requirements.txt`, unchanged and pinned |
+| Application | `app.py`, `ironledger/`, `views/`, `assets/`, `.streamlit/config.toml` |
+| Data | The six Parquet datasets and `metadata.json`, at `/app/data` (`IRONLEDGER_DATA_DIR`) |
+| Server | `streamlit run app.py` on `0.0.0.0:8000`, headless, file watcher off, usage stats off |
+| User | Non-root `ironledger` (UID 10001). `/app` is owned by root and has no write bits |
+| Health | `GET /_stcore/health` returns `ok` (used by the Docker `HEALTHCHECK`) |
+
+The Dockerfile copies an explicit list of files rather than the whole folder. Each dataset is named individually, so
+**the build fails if any dataset is missing**. A build step then loads every table through `load_dataset()` and
+checks the row counts against `metadata.json`, so missing or corrupt data is caught at build time, not by users.
+Tests, `generate_data.py`, CSV mirrors, `infra/` (including Terraform state), and `.streamlit/secrets.toml` are
+excluded by `.dockerignore`.
+
+**Build.** Azure Container Apps runs `linux/amd64` images. On an Apple Silicon Mac, always pass `--platform`:
+
+```bash
+docker build --platform linux/amd64 -t ironledger-analytics:local .
+```
+
+**Run and test locally**
+
+```bash
+# 1. Standard run, then open http://localhost:8000
+docker run --rm -p 8000:8000 --name ironledger ironledger-analytics:local
+
+# 2. In a second terminal: health endpoint and container health status
+curl -s http://localhost:8000/_stcore/health          # -> ok
+docker inspect --format '{{.State.Health.Status}}' ironledger   # -> healthy (after ~30 s)
+
+# 3. Prove the app needs no writable storage: read-only root filesystem, all capabilities dropped
+docker run --rm -p 8000:8000 --read-only --cap-drop ALL --security-opt no-new-privileges \
+  ironledger-analytics:local
+
+# 4. Inspect what shipped
+docker run --rm ironledger-analytics:local ls -l /app/data
+docker run --rm ironledger-analytics:local python -c "import streamlit, sys; print(sys.version, streamlit.__version__)"
+```
+
+In the browser, open each of the six pages, change a sidebar filter, and use an **Export CSV** button. Exports are
+built in memory, so they work on the read-only filesystem. Note that the first visit after a cold start takes a few
+seconds while the dataset loads into the cache.
+
+**Settings for Container Apps (once deployment is approved)**
+
+- Ingress: external, **target port 8000**, transport `auto` or `http`. Streamlit needs WebSockets, which the
+  Container Apps ingress supports.
+- Resources: **0.5 vCPU / 1 Gi** fits the measured ~400 MB peak (section 12).
+- Replicas: use **max replicas = 1**, or turn on **session affinity (sticky sessions)**. Each Streamlit session
+  lives in one replica's memory.
+- Probes: liveness and readiness use HTTP `GET /_stcore/health` on port 8000. Container Apps ignores the Docker
+  `HEALTHCHECK`.
+- Environment variables are already set in the image. Override `IRONLEDGER_DATA_DIR` only if the data moves.
+
+## 14. Future Azure roadmap
 
 The code is organized so cloud deployment changes configuration, not application logic:
 
@@ -301,8 +366,8 @@ The code is organized so cloud deployment changes configuration, not application
    `AzureBlobSource` class in `ironledger/data_loader.py` implementing the existing three-method `DataSource`
    interface (`read_table`, `read_metadata`, `signature`). Select it with `IRONLEDGER_DATA_SOURCE=azure_blob`.
    Nothing in `analytics.py` or `views/` changes.
-2. **Compute.** Containerize the app and deploy to **Azure App Service** or **Azure Container Apps**, keeping
-   `python -m streamlit run app.py` as the start command.
+2. **Compute.** The app is containerized (section 13). It can be deployed to **Azure Container Apps** or to a
+   container-based **Azure App Service**, keeping `python -m streamlit run app.py` as the start command.
 3. **Secrets.** Keep connection strings in **Azure Key Vault** or app settings (never in the repository;
    `.streamlit/secrets.toml` is already git-ignored).
 4. **Data pipeline.** Run `generate_data.py` (or a real data feed) as a scheduled **Azure Function** or **Data Factory**

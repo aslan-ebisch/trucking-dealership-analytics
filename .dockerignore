@@ -1,0 +1,48 @@
+# Keep the build context small and free of secrets. The Dockerfile copies an explicit
+# allow-list, so this file mainly stops large/sensitive paths from being sent to the
+# Docker daemon (or to ACR Tasks with `az acr build`).
+
+# VCS, editors, OS noise
+.git
+.gitignore
+.github
+.vscode
+.idea
+.claude
+**/.DS_Store
+
+# Python caches, virtual environments, test output
+**/__pycache__
+**/*.py[cod]
+.venv
+venv
+env
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Secrets — never bake into an image (use Container Apps secrets / Key Vault)
+.env
+.env.*
+.streamlit/secrets.toml
+**/*.pem
+**/*.key
+
+# Infrastructure: Terraform state can contain secrets; .terraform/ holds ~260 MB of providers
+infra
+
+# Not needed at runtime
+tests
+pytest.ini
+requirements-dev.txt
+generate_data.py
+README.md
+Dockerfile
+.dockerignore
+
+# Data: only the six Parquet files and metadata.json ship; CSV mirrors (~13 MB) stay local
+data/*
+!data/*.parquet
+!data/metadata.json
