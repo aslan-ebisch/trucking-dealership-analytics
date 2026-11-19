@@ -88,6 +88,8 @@ trucking-dealership-analytics/
 ├── pytest.ini
 ├── Dockerfile                  # Production image for Azure Container Apps (Python 3.11, port 8000)
 ├── .dockerignore               # Keeps secrets, Terraform, tests and CSVs out of the build context
+├── .github/workflows/
+│   └── publish-image.yml       # Manual workflow: build, test and publish the image to GHCR
 ├── .streamlit/config.toml      # Dark theme, fonts, chart palette
 ├── assets/                     # Original IronLedger logo (SVG)
 ├── ironledger/                 # Application package
@@ -318,7 +320,8 @@ checks the row counts against `metadata.json`, so missing or corrupt data is cau
 Tests, `generate_data.py`, CSV mirrors, `infra/` (including Terraform state), and `.streamlit/secrets.toml` are
 excluded by `.dockerignore`.
 
-**Build.** Azure Container Apps runs `linux/amd64` images. On an Apple Silicon Mac, always pass `--platform`:
+**Build.** No Docker locally? The GitHub Actions workflow in section 14 builds, tests and publishes the image for
+you. Azure Container Apps runs `linux/amd64` images. On an Apple Silicon Mac, always pass `--platform`:
 
 ```bash
 docker build --platform linux/amd64 -t ironledger-analytics:local .
@@ -358,7 +361,82 @@ seconds while the dataset loads into the cache.
   `HEALTHCHECK`.
 - Environment variables are already set in the image. Override `IRONLEDGER_DATA_DIR` only if the data moves.
 
-## 14. Future Azure roadmap
+## 14. Publishing the image to GitHub Container Registry
+
+The workflow [`.github/workflows/publish-image.yml`](.github/workflows/publish-image.yml) builds the `Dockerfile`
+for `linux/amd64` on a GitHub-hosted runner and pushes the image to **GitHub Container Registry (GHCR)**. You don't
+need Docker installed locally. The workflow does not deploy anything or create Azure resources.
+
+**What the workflow does**
+
+1. **Checks the datasets in the repository.** It confirms that all six `data/*.parquet` files exist, are real
+   Parquet files (not Git LFS pointers), and that `data/metadata.json` lists row counts for exactly those six tables.
+   CI only sees **committed** files, so a dataset that exists only on your laptop fails here.
+2. **Builds the image** for `linux/amd64`. The Dockerfile's own step loads every table and checks its row count.
+3. **Tests the image before publishing.** It confirms all seven data files are inside the image and that `/app` is
+   not writable. Then it starts the container with a read-only filesystem and no Linux capabilities, waits for
+   `/_stcore/health` to return `ok`, and checks that the main page returns HTTP 200.
+4. **Publishes to GHCR** only if every step above passed. It then writes the tags, digest and package link to
+   the run's summary page.
+
+**Permissions.** The workflow uses the built-in `GITHUB_TOKEN`, not a personal access token. All permissions are
+denied by default (`permissions: {}`), and the one job gets only `contents: read` (to check out the code) and
+`packages: write` (to push the image). Every action is pinned to a full commit SHA.
+
+**Run the workflow.** The workflow file must be on the default branch (`main`) before GitHub shows it.
+
+- *Web:* **Actions** tab → **Publish container image** → **Run workflow** → branch `main` → **Run workflow**.
+- *CLI:*
+  ```bash
+  gh workflow run publish-image.yml --ref main
+  gh run watch          # follow progress; the run summary lists the published tags and digest
+  ```
+
+**Find the image**
+
+| | |
+|---|---|
+| Image | `ghcr.io/aslan-ebisch/trucking-dealership-analytics` |
+| Tags | `sha-<7-char commit>` (every run), `latest` (runs from `main`), `<branch>` (runs from other branches) |
+| Package page | <https://github.com/aslan-ebisch/trucking-dealership-analytics/pkgs/container/trucking-dealership-analytics> — also listed under **Packages** on the repository home page and your GitHub profile |
+
+```bash
+docker pull ghcr.io/aslan-ebisch/trucking-dealership-analytics:sha-<commit>
+```
+
+For Azure, use the `sha-…` tag or, better, the digest (`…@sha256:…`) shown in the run summary. `latest` moves
+on every run from `main`, so a new revision might pull a different image than you tested.
+
+**Make the package publicly readable** (one-time, after the first successful run)
+
+New GHCR packages are usually **private**, even when the repository is public. A public package lets Azure Container
+Apps pull the image without registry credentials.
+
+1. Open the package page above (or your profile → **Packages** → `trucking-dealership-analytics`).
+2. **Package settings** → **Danger Zone** → **Change visibility** → **Public**, then type the package name to confirm.
+3. While you're there, check that **Manage Actions access** lists this repository with **Write** access. A package
+   created by this workflow is linked to the repository automatically.
+
+> **⚠ Making a package public can't be undone.** GitHub doesn't let you make a public package private again.
+> Anyone can pull every tag. The image contains only the app code and synthetic data; `.dockerignore` excludes
+> secrets and Terraform state. Still, never add real data or credentials to this image.
+
+To check that anonymous pulls work, request an anonymous pull token. This needs no Docker and no login:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  "https://ghcr.io/token?scope=repository:aslan-ebisch/trucking-dealership-analytics:pull"
+# 200 = public (anonymous pulls allowed)   403 = private, or not published yet
+```
+
+To confirm with Docker, run `docker logout ghcr.io` and then `docker pull` an image tag.
+
+When the package is public, set Container Apps to the registry server `ghcr.io` and image
+`ghcr.io/aslan-ebisch/trucking-dealership-analytics@sha256:<digest>`, with **no** registry credentials. If you'd
+rather keep the package private, Container Apps needs a registry credential instead: a GitHub personal access token
+(classic) with only `read:packages`, stored as a Container Apps secret.
+
+## 15. Future Azure roadmap
 
 The code is organized so cloud deployment changes configuration, not application logic:
 

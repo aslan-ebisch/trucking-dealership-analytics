@@ -1,0 +1,189 @@
+# Build the IronLedger Analytics container image (linux/amd64) and publish it to
+# GitHub Container Registry (GHCR). Manual trigger only for now; see README section 14.
+#
+# Image: ghcr.io/<owner>/<repo>, e.g. ghcr.io/aslan-ebisch/trucking-dealership-analytics
+# Tags:  sha-<7-char commit>  (always; use this tag or the digest for deployments)
+#        latest               (only when run from the default branch)
+#        <branch>             (when run from any other branch)
+#
+# This workflow does NOT deploy anywhere and creates no cloud resources.
+
+name: Publish container image
+
+on:
+  workflow_dispatch:
+
+# Deny everything by default; the job below requests only what it needs.
+permissions: {}
+
+concurrency:
+  group: publish-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  REQUIRED_TABLES: dealerships salespeople customers inventory sales operating_expenses
+
+jobs:
+  build-test-publish:
+    name: Build, test and publish (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read    # check out the repository
+      packages: write   # push the image to GHCR (GITHUB_TOKEN)
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Fails fast, with a clear message, if a dataset was not committed or was committed
+      # as a Git LFS pointer instead of the real file.
+      - name: Check required datasets in the repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          for t in $REQUIRED_TABLES; do
+            f="data/$t.parquet"
+            if [[ ! -s "$f" ]]; then
+              echo "::error file=$f::Required dataset is missing or empty"; failed=1; continue
+            fi
+            # Every Parquet file starts and ends with the magic bytes "PAR1".
+            if [[ "$(head -c4 "$f")" != "PAR1" || "$(tail -c4 "$f")" != "PAR1" ]]; then
+              echo "::error file=$f::Not a valid Parquet file (Git LFS pointer?)"; failed=1; continue
+            fi
+            echo "ok  $f ($(wc -c < "$f") bytes)"
+          done
+          python3 - <<'PY' || failed=1
+          import json, os, sys
+          expected = set(os.environ["REQUIRED_TABLES"].split())
+          try:
+              counts = json.load(open("data/metadata.json"))["row_counts"]
+          except Exception as exc:
+              print(f"::error file=data/metadata.json::Missing or unreadable: {exc}")
+              sys.exit(1)
+          if set(counts) != expected:
+              print(f"::error file=data/metadata.json::row_counts tables {sorted(counts)} != {sorted(expected)}")
+              sys.exit(1)
+          print("ok  data/metadata.json", counts)
+          PY
+          exit "$failed"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Compute image tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha
+            type=ref,event=branch,enable=${{ github.ref_name != github.event.repository.default_branch }}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=IronLedger Analytics
+            org.opencontainers.image.description=Streamlit dashboard for a fictional commercial truck dealership group (synthetic data).
+
+      # Build once into the runner's Docker engine so the image can be tested before
+      # anything is published. The Dockerfile's own build step also validates the data.
+      - name: Build image for testing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ironledger-ci:test
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test image (datasets, read-only, health check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "--- Datasets baked into the image"
+          docker run --rm -e REQUIRED_TABLES="$REQUIRED_TABLES" ironledger-ci:test python -c '
+          import os, sys
+          data = os.environ["IRONLEDGER_DATA_DIR"]
+          want = {f"{t}.parquet" for t in os.environ["REQUIRED_TABLES"].split()} | {"metadata.json"}
+          have = set(os.listdir(data))
+          missing = want - have
+          for name in sorted(have):
+              print(f"  {name:28s} {os.path.getsize(os.path.join(data, name)):>10,d} bytes")
+          if missing:
+              sys.exit(f"Missing from image: {sorted(missing)}")
+          if os.access("/app", os.W_OK) or os.access(data, os.W_OK):
+              sys.exit("/app or the data directory is writable by the runtime user")
+          print(f"user uid={os.getuid()}; /app and {data} are read-only")
+          '
+
+          echo "--- Start with a read-only root filesystem and no capabilities"
+          docker run -d --name ironledger-smoke -p 8000:8000 \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            ironledger-ci:test
+          for i in $(seq 1 60); do
+            if [[ "$(curl -fsS http://127.0.0.1:8000/_stcore/health 2>/dev/null)" == "ok" ]]; then
+              echo "health: ok after ${i}s"; break
+            fi
+            if [[ "$i" == 60 ]]; then
+              echo "::error::Container did not become healthy within 60s"
+              docker logs ironledger-smoke; exit 1
+            fi
+            sleep 1
+          done
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/)
+          [[ "$code" == "200" ]] || { echo "::error::GET / returned $code"; docker logs ironledger-smoke; exit 1; }
+          echo "GET / -> 200"
+          docker logs ironledger-smoke
+          docker rm -f ironledger-smoke
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same inputs as the test build, so every layer comes from the build cache.
+      - name: Publish image to GHCR
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+      - name: Write job summary
+        shell: bash
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          PACKAGE_URL: ${{ github.server_url }}/${{ github.repository }}/pkgs/container/${{ github.event.repository.name }}
+        run: |
+          {
+            echo "## Published IronLedger Analytics image"
+            echo
+            echo "**Package:** $PACKAGE_URL"
+            echo
+            echo "**Digest:** \`$DIGEST\`"
+            echo
+            echo "**Tags:**"
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+            echo "**Pin by digest (recommended for Azure Container Apps):**"
+            echo '```'
+            echo "${REGISTRY}/${IMAGE_NAME,,}@${DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
